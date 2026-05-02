@@ -1,0 +1,553 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>WW1 Dogfight - Single Screen</title>
+<style>
+  html, body {
+    margin: 0; padding: 0;
+    background: #111;
+    color: #eee;
+    font-family: 'Courier New', monospace;
+    overflow: hidden;
+    height: 100%;
+  }
+  #wrap {
+    position: relative;
+    width: 100vw; height: 100vh;
+    display: flex; justify-content: center; align-items: center;
+  }
+  canvas {
+    background: #87CEEB;
+    image-rendering: pixelated;
+    max-width: 100%; max-height: 100%;
+    box-shadow: 0 0 30px rgba(0,0,0,0.6);
+  }
+  #menu {
+    position: absolute; inset: 0;
+    background: rgba(10,10,20,0.92);
+    display: flex; flex-direction: column;
+    justify-content: center; align-items: center;
+    text-align: center;
+    z-index: 10;
+  }
+  #menu.hidden { display: none; }
+  h1 {
+    font-size: 3em; margin: 0 0 10px;
+    letter-spacing: 6px;
+    color: #f1c40f;
+    text-shadow: 4px 4px 0 #c0392b;
+  }
+  .sub { color: #bbb; margin-bottom: 25px; }
+  button {
+    font-family: inherit;
+    font-size: 1.2em;
+    padding: 14px 40px;
+    margin: 8px;
+    background: #c0392b;
+    color: white;
+    border: 3px solid #f1c40f;
+    cursor: pointer;
+    letter-spacing: 2px;
+  }
+  button:hover { background: #e74c3c; }
+  .controls {
+    margin-top: 30px;
+    background: rgba(255,255,255,0.05);
+    padding: 16px 24px;
+    border: 1px solid #333;
+    font-size: 0.95em;
+  }
+  .controls h3 { margin: 0 0 10px; color: #f1c40f; }
+  .row { display: flex; justify-content: space-between; gap: 30px; padding: 3px 0; }
+  .name { font-weight: bold; min-width: 110px; text-align: left; }
+  .keys { color: #bbb; }
+  .p1 { color: #e74c3c; }
+  .p2 { color: #3498db; }
+  .p3 { color: #f1c40f; }
+  .p4 { color: #2ecc71; }
+  #banner {
+    position: absolute;
+    top: 20px; left: 50%;
+    transform: translateX(-50%);
+    color: #f1c40f;
+    font-size: 1.5em;
+    text-shadow: 2px 2px 0 #000;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.3s;
+  }
+  #banner.show { opacity: 1; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="game" width="1280" height="720"></canvas>
+  <div id="banner"></div>
+  <div id="menu">
+    <h1>WW1 DOGFIGHT</h1>
+    <div class="sub">Single Screen Air Combat</div>
+    <div>
+      <button onclick="startGame(2)">2 PLAYERS</button>
+      <button onclick="startGame(4)">4 PLAYERS</button>
+    </div>
+    <div class="controls">
+      <h3>CONTROLS&nbsp;&nbsp;(Pitch Up / Pitch Down / Fire)</h3>
+      <div class="row p1"><span class="name">P1 RED</span><span class="keys">Q&nbsp;&nbsp;/&nbsp;&nbsp;A&nbsp;&nbsp;/&nbsp;&nbsp;Z</span></div>
+      <div class="row p2"><span class="name">P2 BLUE</span><span class="keys">T&nbsp;&nbsp;/&nbsp;&nbsp;G&nbsp;&nbsp;/&nbsp;&nbsp;B</span></div>
+      <div class="row p3"><span class="name">P3 YELLOW</span><span class="keys">I&nbsp;&nbsp;/&nbsp;&nbsp;K&nbsp;&nbsp;/&nbsp;&nbsp;M</span></div>
+      <div class="row p4"><span class="name">P4 GREEN</span><span class="keys">&uarr;&nbsp;&nbsp;/&nbsp;&nbsp;&darr;&nbsp;&nbsp;/&nbsp;&nbsp;R-SHIFT</span></div>
+      <div class="sub" style="margin-top:14px;font-size:0.85em;">2-player mode uses P1 (RED) and P4 (GREEN)<br>Press ESC to return to menu</div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ==================== Setup ====================
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const W = canvas.width;
+const H = canvas.height;
+const GROUND_Y = H - 70;
+const SKY_TOP = 30;
+
+const COLORS = ['#e74c3c', '#3498db', '#f1c40f', '#2ecc71'];
+const NAMES  = ['P1', 'P2', 'P3', 'P4'];
+
+// Each player has 3 keys: pitch up, pitch down, fire
+const KEY_CONFIGS = [
+  { up: 'KeyQ',     down: 'KeyA',       fire: 'KeyZ' },
+  { up: 'KeyT',     down: 'KeyG',       fire: 'KeyB' },
+  { up: 'KeyI',     down: 'KeyK',       fire: 'KeyM' },
+  { up: 'ArrowUp',  down: 'ArrowDown',  fire: 'ShiftRight' },
+];
+
+// 12 angle steps of 30° each. step 0 = nose right (0°), step 3 = up (90°),
+// step 6 = left (180°), step 9 = down (270°).
+const ANGLE_STEPS = 12;
+const STEP_RAD = Math.PI * 2 / ANGLE_STEPS;
+
+// 8 speeds + 0 stop/stall. Internally stored as a float, displayed floored.
+const MAX_SPEED = 8;
+const SPEED_PIX = 1.6; // pixels per speed unit per frame
+
+// Tunables for the requested physics:
+//   - climbing slowly does NOT slow the plane
+//   - climbing fast DOES slow the plane
+const ENGINE_THRUST   = 0.09;
+const GRAVITY_PITCH   = 0.10;  // gain when diving, loss when climbing
+const CLIMB_RATE_FREE = 1.5;   // vertical rate considered "slow climb"
+const CLIMB_DRAG      = 0.09;  // extra drag per unit of vertical-rate above free
+const STALL_SPEED     = 0.6;
+const FALL_RESET_SPD  = 6.5;   // falling fast => respawn
+
+// ==================== Input ====================
+const keys = Object.create(null);
+addEventListener('keydown', e => {
+  keys[e.code] = true;
+  if (e.code === 'Escape') returnToMenu();
+  // Avoid scrolling with arrow keys / space
+  if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Space'].includes(e.code)) e.preventDefault();
+});
+addEventListener('keyup', e => { keys[e.code] = false; });
+
+// ==================== Game State ====================
+let players = [];
+let bullets = [];
+let particles = [];
+let running = false;
+let bannerTimer = 0;
+
+function startGame(n) {
+  document.getElementById('menu').classList.add('hidden');
+  // 2-player uses P1 + P4 (opposite sides of keyboard)
+  const indices = (n === 2) ? [0, 3] : [0, 1, 2, 3];
+  players = indices.map((idx, slot) => makePlayer(idx, slot, indices.length));
+  bullets = [];
+  particles = [];
+  running = true;
+  showBanner('FIGHT!');
+  requestAnimationFrame(loop);
+}
+
+function returnToMenu() {
+  running = false;
+  document.getElementById('menu').classList.remove('hidden');
+}
+
+function makePlayer(colorIdx, slot, total) {
+  const x = (W / (total + 1)) * (slot + 1);
+  return {
+    id: colorIdx,
+    color: COLORS[colorIdx],
+    name: NAMES[colorIdx],
+    keys: KEY_CONFIGS[colorIdx],
+    x, y: GROUND_Y,
+    angleStep: 0,
+    speed: 0,
+    onGround: true,
+    stalled: false,
+    alive: true,
+    deathTimer: 0,
+    rotateCD: 0,
+    fireCD: 0,
+    score: 0,
+    spawnX: x,
+  };
+}
+
+// ==================== Loop ====================
+function loop() {
+  if (!running) return;
+  update();
+  render();
+  requestAnimationFrame(loop);
+}
+
+function update() {
+  if (bannerTimer > 0) bannerTimer--;
+  if (bannerTimer === 0) document.getElementById('banner').classList.remove('show');
+
+  for (const p of players) {
+    if (!p.alive) {
+      p.deathTimer--;
+      if (p.deathTimer <= 0) respawn(p);
+      continue;
+    }
+    handleInput(p);
+    physics(p);
+  }
+
+  for (const b of bullets) {
+    b.x += b.vx;
+    b.y += b.vy;
+    b.life--;
+  }
+  // Bullet collisions
+  for (const b of bullets) {
+    if (b.life <= 0) continue;
+    for (const p of players) {
+      if (!p.alive || p.id === b.owner) continue;
+      const dx = p.x - b.x, dy = p.y - b.y;
+      if (dx*dx + dy*dy < 22*22) {
+        kill(p, 'shot');
+        const shooter = players.find(q => q.id === b.owner);
+        if (shooter) shooter.score++;
+        b.life = 0;
+        break;
+      }
+    }
+  }
+  bullets = bullets.filter(b => b.life > 0 && b.x > -10 && b.x < W+10 && b.y > -10 && b.y < H+10);
+
+  for (const p of particles) {
+    p.x += p.vx; p.y += p.vy;
+    p.vy += 0.12;
+    p.life--;
+  }
+  particles = particles.filter(p => p.life > 0);
+}
+
+// ==================== Input handling ====================
+function handleInput(p) {
+  if (p.rotateCD > 0) p.rotateCD--;
+  if (p.fireCD   > 0) p.fireCD--;
+
+  if (p.rotateCD === 0) {
+    if (keys[p.keys.up]) {
+      p.angleStep = (p.angleStep + 1) % ANGLE_STEPS;
+      p.rotateCD = 7;
+      if (p.onGround && p.speed > 1.5) p.onGround = false; // take off
+    } else if (keys[p.keys.down]) {
+      p.angleStep = (p.angleStep + ANGLE_STEPS - 1) % ANGLE_STEPS;
+      p.rotateCD = 7;
+    }
+  }
+  if (p.fireCD === 0 && keys[p.keys.fire] && !p.onGround && !p.stalled) {
+    fire(p);
+    p.fireCD = 14;
+  }
+}
+
+// ==================== Physics ====================
+// Math convention: angle 0 = +x, angle increases CCW. y-up.
+// Canvas y is inverted at draw time.
+function angleRad(p) { return p.angleStep * STEP_RAD; }
+
+function physics(p) {
+  const a = angleRad(p);
+  const cos = Math.cos(a);
+  const sin = Math.sin(a); // > 0 means nose pointed up (math y-up)
+
+  if (p.stalled) {
+    // Locked: nose down, gravity accelerates the fall. Falling fast => respawn.
+    p.angleStep = 9;
+    p.speed += 0.18;
+    p.x += 0;             // no horizontal drift while stalling straight down
+    p.y += p.speed * SPEED_PIX; // canvas y down
+    if (p.speed >= FALL_RESET_SPD || p.y >= GROUND_Y) {
+      kill(p, 'stall');
+    }
+    return;
+  }
+
+  if (p.onGround) {
+    p.angleStep = 0;
+    p.y = GROUND_Y;
+    p.speed = Math.min(MAX_SPEED, p.speed + 0.10);
+    p.x += p.speed * SPEED_PIX;
+    if (p.x > W) p.x -= W;
+    return;
+  }
+
+  // ---- airborne ----
+  // engine thrust always pushes toward MAX_SPEED
+  let dSpeed = ENGINE_THRUST;
+  // pitch / gravity coupling
+  dSpeed += -sin * GRAVITY_PITCH;
+  // climb-rate drag: only when climbing FAST do we lose speed
+  const verticalRate = sin * p.speed; // >0 means climbing
+  if (verticalRate > CLIMB_RATE_FREE) {
+    dSpeed -= (verticalRate - CLIMB_RATE_FREE) * CLIMB_DRAG;
+  }
+  p.speed = Math.max(0, Math.min(MAX_SPEED, p.speed + dSpeed));
+
+  // Stall: too slow while pointed upward
+  if (p.speed < STALL_SPEED && sin > 0.2) {
+    p.stalled = true;
+    p.angleStep = 9;
+    p.speed = 0.4;
+    return;
+  }
+
+  // Move
+  p.x += cos * p.speed * SPEED_PIX;
+  p.y -= sin * p.speed * SPEED_PIX;
+
+  // Wrap horizontally
+  if (p.x > W) p.x -= W;
+  if (p.x < 0) p.x += W;
+  // Ceiling
+  if (p.y < SKY_TOP) { p.y = SKY_TOP; if (sin > 0) p.speed *= 0.92; }
+
+  // Ground interaction
+  if (p.y >= GROUND_Y) {
+    // Hard impact = crash; gentle level landing = taxi.
+    const downRate = -sin * p.speed; // >0 if descending
+    if (downRate > 1.5 || Math.abs(sin) > 0.3) {
+      kill(p, 'crash');
+    } else {
+      p.y = GROUND_Y;
+      p.onGround = true;
+      p.angleStep = 0;
+    }
+  }
+}
+
+// ==================== Combat ====================
+function fire(p) {
+  const a = angleRad(p);
+  const cos = Math.cos(a), sin = Math.sin(a);
+  bullets.push({
+    x: p.x + cos * 24,
+    y: p.y - sin * 24,
+    vx: cos * (10 + p.speed * 0.6),
+    vy: -sin * (10 + p.speed * 0.6),
+    owner: p.id,
+    life: 55,
+  });
+}
+
+function kill(p, cause) {
+  if (!p.alive) return;
+  p.alive = false;
+  p.deathTimer = 70;
+  // explosion particles
+  for (let i = 0; i < 22; i++) {
+    const ang = Math.random() * Math.PI * 2;
+    const spd = 1 + Math.random() * 4;
+    particles.push({
+      x: p.x, y: p.y,
+      vx: Math.cos(ang) * spd,
+      vy: Math.sin(ang) * spd - 1,
+      life: 30 + Math.random()*20,
+      color: ['#f1c40f','#e67e22','#c0392b','#7f8c8d'][i % 4],
+      size: 2 + Math.random()*2,
+    });
+  }
+}
+
+function respawn(p) {
+  p.x = p.spawnX + (Math.random() * 80 - 40);
+  if (p.x < 60) p.x = 60;
+  if (p.x > W - 60) p.x = W - 60;
+  p.y = GROUND_Y;
+  p.angleStep = 0;
+  p.speed = 0;
+  p.onGround = true;
+  p.stalled = false;
+  p.alive = true;
+  p.rotateCD = 0;
+  p.fireCD = 0;
+}
+
+// ==================== Render ====================
+function render() {
+  // sky
+  const sky = ctx.createLinearGradient(0, 0, 0, GROUND_Y);
+  sky.addColorStop(0, '#3A6EA5');
+  sky.addColorStop(1, '#D6EAF8');
+  ctx.fillStyle = sky;
+  ctx.fillRect(0, 0, W, GROUND_Y);
+
+  // distant clouds
+  ctx.fillStyle = 'rgba(255,255,255,0.75)';
+  for (let i = 0; i < 7; i++) {
+    const cx = (i * 197 + 90) % W;
+    const cy = 70 + (i * 53) % 140;
+    cloud(cx, cy);
+  }
+
+  // ground
+  ctx.fillStyle = '#7CB342';
+  ctx.fillRect(0, GROUND_Y, W, H - GROUND_Y);
+  ctx.fillStyle = '#558B2F';
+  ctx.fillRect(0, GROUND_Y, W, 6);
+  // little hangars
+  for (let i = 0; i < 4; i++) {
+    const hx = 80 + i * (W/4);
+    ctx.fillStyle = '#5D4037';
+    ctx.fillRect(hx, GROUND_Y - 14, 30, 14);
+    ctx.fillStyle = '#3E2723';
+    ctx.beginPath();
+    ctx.moveTo(hx-3, GROUND_Y-14);
+    ctx.lineTo(hx+15, GROUND_Y-22);
+    ctx.lineTo(hx+33, GROUND_Y-14);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  // bullets
+  for (const b of bullets) {
+    ctx.fillStyle = '#FFEB3B';
+    ctx.fillRect(b.x - 2, b.y - 2, 4, 4);
+    ctx.fillStyle = 'rgba(255,235,59,0.4)';
+    ctx.fillRect(b.x - b.vx*0.3 - 1, b.y - b.vy*0.3 - 1, 2, 2);
+  }
+
+  // particles
+  for (const pt of particles) {
+    ctx.globalAlpha = Math.min(1, pt.life / 30);
+    ctx.fillStyle = pt.color;
+    ctx.fillRect(pt.x - pt.size/2, pt.y - pt.size/2, pt.size, pt.size);
+  }
+  ctx.globalAlpha = 1;
+
+  // planes
+  for (const p of players) {
+    if (p.alive) drawPlane(p);
+  }
+
+  // HUD
+  drawHUD();
+}
+
+function cloud(cx, cy) {
+  ctx.beginPath();
+  ctx.arc(cx,    cy,    22, 0, Math.PI*2);
+  ctx.arc(cx+18, cy+4,  18, 0, Math.PI*2);
+  ctx.arc(cx-18, cy+4,  18, 0, Math.PI*2);
+  ctx.arc(cx+8,  cy-10, 16, 0, Math.PI*2);
+  ctx.fill();
+}
+
+function drawPlane(p) {
+  ctx.save();
+  ctx.translate(Math.round(p.x), Math.round(p.y));
+  // canvas rotation is clockwise positive; math angle is CCW positive => negate
+  ctx.rotate(-angleRad(p));
+
+  // fuselage
+  ctx.fillStyle = p.color;
+  ctx.fillRect(-16, -3, 32, 6);
+  // tail fin
+  ctx.beginPath();
+  ctx.moveTo(-16, -3);
+  ctx.lineTo(-22, -10);
+  ctx.lineTo(-14, -3);
+  ctx.closePath();
+  ctx.fill();
+  // tail elevator
+  ctx.fillRect(-22, -1, 8, 2);
+  // upper wing
+  ctx.fillRect(-10, -11, 22, 3);
+  // lower wing
+  ctx.fillRect(-10,   8, 22, 3);
+  // struts
+  ctx.fillStyle = '#222';
+  ctx.fillRect(-8, -8, 1, 16);
+  ctx.fillRect( 8, -8, 1, 16);
+  // cockpit
+  ctx.fillRect(0, -5, 5, 2);
+  // engine cowl
+  ctx.fillStyle = '#444';
+  ctx.fillRect(14, -4, 3, 8);
+  // propeller (animated blur when moving)
+  ctx.fillStyle = (p.speed > 0.1) ? 'rgba(50,50,50,0.5)' : '#222';
+  if (p.speed > 0.1) {
+    ctx.beginPath();
+    ctx.ellipse(18, 0, 2, 8, 0, 0, Math.PI*2);
+    ctx.fill();
+  } else {
+    ctx.fillRect(17, -7, 1, 14);
+  }
+
+  ctx.restore();
+
+  // stall indicator
+  if (p.stalled) {
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 12px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('STALL!', p.x, p.y - 18);
+    ctx.textAlign = 'left';
+  }
+}
+
+function drawHUD() {
+  ctx.font = 'bold 16px monospace';
+  ctx.textBaseline = 'top';
+  const slots = players.length;
+  for (let i = 0; i < slots; i++) {
+    const p = players[i];
+    let bx, by;
+    if (slots === 2) {
+      bx = (i === 0) ? 12 : W - 220;
+      by = 10;
+    } else {
+      // 4-player corners
+      bx = (i % 2 === 0) ? 12 : W - 220;
+      by = (i < 2) ? 10 : 38;
+    }
+    // background tag
+    ctx.fillStyle = 'rgba(0,0,0,0.45)';
+    ctx.fillRect(bx - 4, by - 2, 210, 22);
+    ctx.fillStyle = p.color;
+    const spdLabel = p.stalled ? 'STALL' : (p.speed < 0.1 ? 'STOP' : Math.max(1, Math.min(MAX_SPEED, Math.floor(p.speed))));
+    ctx.fillText(`${p.name}  KILLS:${p.score}  SPD:${spdLabel}`, bx, by);
+  }
+  ctx.textBaseline = 'alphabetic';
+}
+
+function showBanner(text) {
+  const el = document.getElementById('banner');
+  el.textContent = text;
+  el.classList.add('show');
+  bannerTimer = 90;
+}
+
+// expose for buttons
+window.startGame = startGame;
+</script>
+</body>
+</html>
