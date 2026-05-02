@@ -132,18 +132,22 @@ const MAX_SPEED       = 5;
 const TERMINAL_SPEED  = 7.5; // maximum speed reachable in a dive (mass + gravity)
 const SPEED_PIX       = 1.0; // pixels per speed unit per frame (whole game pace)
 
-// Mass-based physics.
-//   - engine seeks cruise (MAX_SPEED), gentle pull
+// Mass-based physics. Mass = 3 (trebled): all speed-changing forces are
+// scaled down by 1/3 so the plane responds far more sluggishly to engine
+// thrust, dives and climb drag.
+//   - engine seeks cruise (MAX_SPEED), very gentle pull
 //   - dive component of gravity always adds speed (mass falls)
 //   - level / shallow climb stays at cruise (engine balances gravity ~ sin <= 0.5)
-//   - climbs steeper than ~30 degrees lose speed quickly
-const ENGINE_GAIN     = 0.025;  // engine seek strength
-const DIVE_GAIN       = 0.07;   // gravity-along-velocity when diving
-const STEEP_CLIMB_SIN = 0.5;    // 30 deg climb is still "shallow"
-const STEEP_DRAG      = 0.45;   // speed loss per unit sin above STEEP_CLIMB_SIN
+//   - climbs steeper than ~30 degrees lose speed (now slowly)
+const MASS            = 3;
+const ENGINE_GAIN     = 0.025 / MASS;  // engine seek strength
+const DIVE_GAIN       = 0.07  / MASS;  // gravity-along-velocity when diving
+const STEEP_CLIMB_SIN = 0.5;           // 30 deg climb is still "shallow"
+const STEEP_DRAG      = 0.45  / MASS;  // speed loss per unit sin above STEEP_CLIMB_SIN
+const GROUND_ACCEL    = 0.06  / MASS;  // throttle-up on the runway
 const STALL_SPEED     = 0.5;
-const STALL_RECOVER   = 2.2;    // speed needed to exit stall (with nose down)
-const STALL_FALL      = 0.55;   // pixels/frame of free-fall while stalled
+const STALL_RECOVER   = 2.2;           // speed needed to exit stall (with nose down)
+const STALL_FALL      = 0.55;          // pixels/frame of free-fall while stalled (gravity, mass-independent)
 
 // Bullets
 const BULLET_BASE_SPD = 8;
@@ -290,7 +294,7 @@ function physics(p) {
   if (p.onGround) {
     p.angleStep = 0;
     p.y = GROUND_Y;
-    p.speed = Math.min(MAX_SPEED, p.speed + 0.06);
+    p.speed = Math.min(MAX_SPEED, p.speed + GROUND_ACCEL);
     p.x += p.speed * SPEED_PIX;
     if (p.x > W) p.x -= W;
     return;
