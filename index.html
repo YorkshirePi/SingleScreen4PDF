@@ -175,6 +175,7 @@ addEventListener('keyup', e => { keys[e.code] = false; });
 let players = [];
 let bullets = [];
 let particles = [];
+let fireballs = [];
 let running = false;
 let bannerTimer = 0;
 
@@ -185,6 +186,7 @@ function startGame(n) {
   players = indices.map((idx, slot) => makePlayer(idx, slot, indices.length));
   bullets = [];
   particles = [];
+  fireballs = [];
   running = true;
   showBanner('FIGHT!');
   requestAnimationFrame(loop);
@@ -260,6 +262,38 @@ function update() {
     }
   }
   bullets = bullets.filter(b => b.life > 0 && b.x > -10 && b.x < W+10 && b.y > -10 && b.y < H+10);
+
+  // Plane-plane mid-air collisions: both detonate, leaving a slightly larger
+  // fireball at the impact point that can engulf nearby planes.
+  for (let i = 0; i < players.length; i++) {
+    for (let j = i + 1; j < players.length; j++) {
+      const a = players[i], b = players[j];
+      if (!a.alive || !b.alive || a.onGround || b.onGround) continue;
+      const dx = a.x - b.x, dy = a.y - b.y;
+      if (dx*dx + dy*dy < 26*26) {
+        const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+        kill(a, 'midair');
+        kill(b, 'midair');
+        spawnFireball(mx, my, 70, true);
+      }
+    }
+  }
+
+  // Fireballs: expand, then check engulfed planes (chain-reactions allowed).
+  for (const fb of fireballs) {
+    fb.age++;
+    if (!fb.lethal) continue;
+    const r = fireballRadius(fb);
+    for (const p of players) {
+      if (!p.alive || p.onGround) continue;
+      const dx = p.x - fb.x, dy = p.y - fb.y;
+      if (dx*dx + dy*dy < r*r) {
+        kill(p, 'engulfed');
+        spawnFireball(p.x, p.y, 55, true);
+      }
+    }
+  }
+  fireballs = fireballs.filter(fb => fb.age < fb.maxAge);
 
   for (const p of particles) {
     p.x += p.vx; p.y += p.vy;
@@ -414,6 +448,27 @@ function kill(p, cause) {
       size: 2 + Math.random()*2,
     });
   }
+  // small visual fireball for bullet kills / crashes; the larger lethal
+  // fireball for midair collisions is spawned by the collision handler.
+  if (cause !== 'midair' && cause !== 'engulfed') {
+    spawnFireball(p.x, p.y, 28, false);
+  }
+}
+
+function spawnFireball(x, y, peakR, lethal) {
+  fireballs.push({
+    x, y,
+    age: 0,
+    maxAge: 40,
+    peakR,
+    lethal: !!lethal,
+  });
+}
+
+function fireballRadius(fb) {
+  // expand to peakR over the first ~30% of life, then hold
+  const t = fb.age / fb.maxAge;
+  return fb.peakR * Math.min(1, t * 3.5);
 }
 
 function respawn(p) {
@@ -482,6 +537,29 @@ function render() {
     ctx.fillRect(pt.x - pt.size/2, pt.y - pt.size/2, pt.size, pt.size);
   }
   ctx.globalAlpha = 1;
+
+  // fireballs (rendered behind planes; lethal ones a touch redder)
+  for (const fb of fireballs) {
+    const r = fireballRadius(fb);
+    const t = fb.age / fb.maxAge;
+    const alpha = 1 - t;
+    const grad = ctx.createRadialGradient(fb.x, fb.y, r * 0.1, fb.x, fb.y, r);
+    grad.addColorStop(0,    `rgba(255, 245, 180, ${alpha})`);
+    grad.addColorStop(0.45, `rgba(255, 150, 30,  ${alpha * 0.95})`);
+    grad.addColorStop(0.85, `rgba(180, 40,  10,  ${alpha * 0.7})`);
+    grad.addColorStop(1,    `rgba(60,  20,  10,  0)`);
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.arc(fb.x, fb.y, r, 0, Math.PI * 2);
+    ctx.fill();
+    // dark smoke at the tail end
+    if (t > 0.5) {
+      ctx.fillStyle = `rgba(40, 40, 40, ${(t - 0.5) * 0.6})`;
+      ctx.beginPath();
+      ctx.arc(fb.x, fb.y - 8 * (t - 0.5), r * 0.6, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
 
   // planes
   for (const p of players) {
@@ -571,14 +649,12 @@ function drawHUD() {
     }
     // background tag
     ctx.fillStyle = 'rgba(0,0,0,0.45)';
-    ctx.fillRect(bx - 4, by - 2, 240, 22);
+    ctx.fillRect(bx - 4, by - 2, 200, 22);
     ctx.fillStyle = p.color;
-    const spdLabel = p.stalled ? 'STALL'
-      : (p.speed < 0.1 ? 'STOP'
-      : (p.speed > MAX_SPEED + 0.05 ? `${MAX_SPEED}+` : Math.max(1, Math.ceil(p.speed))));
-    ctx.fillText(`${p.name}  KILLS:${p.score}  SPD:${spdLabel}`, bx, by);
+    const stateLabel = p.stalled ? '  STALL' : '';
+    ctx.fillText(`${p.name}  KILLS:${p.score}${stateLabel}`, bx, by);
     // energy bar
-    const barX = bx + 168, barY = by + 4, barW = 60, barH = 10;
+    const barX = bx + 130, barY = by + 4, barW = 60, barH = 10;
     ctx.fillStyle = 'rgba(255,255,255,0.25)';
     ctx.fillRect(barX, barY, barW, barH);
     ctx.fillStyle = p.color;
