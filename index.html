@@ -149,7 +149,7 @@ const ENERGY_DECAY      = 0.0008;  // otherwise
 //   - climbs steeper than ~30 degrees lose speed (now slowly)
 const MASS            = 3;
 const ENGINE_GAIN     = 0.025 / MASS;  // engine seek strength
-const DIVE_GAIN       = 0.07  / MASS;  // gravity-along-velocity when diving
+const DIVE_GAIN       = 0.15  / MASS;  // gravity-along-velocity when diving (any nose-down adds speed)
 const STEEP_CLIMB_SIN = 0.5;           // 30 deg climb is still "shallow"
 const STEEP_DRAG      = 0.45  / MASS;  // speed loss per unit sin above STEEP_CLIMB_SIN
 const GROUND_ACCEL    = 0.06  / MASS;  // throttle-up on the runway
