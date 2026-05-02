@@ -305,16 +305,20 @@ function physics(p) {
 
   if (p.stalled) {
     // No useful airflow: engine almost ineffective. Gravity along nose still works.
-    dSpeed += (MAX_SPEED - p.speed) * (ENGINE_GAIN * 0.25);
+    if (p.speed < MAX_SPEED) dSpeed += (MAX_SPEED - p.speed) * (ENGINE_GAIN * 0.25);
     if (sin < 0) dSpeed += -sin * DIVE_GAIN;
   } else {
-    // Engine seeks cruise speed (gentle, mass means slow change)
-    dSpeed += (MAX_SPEED - p.speed) * ENGINE_GAIN;
-    // Gravity along velocity vector: dive adds speed, climb subtracts
+    // Engine only pulls UP toward cruise — never drags speed back down.
+    // This lets dive-acquired momentum carry through level / shallow-climb flight.
+    if (p.speed < MAX_SPEED) {
+      dSpeed += (MAX_SPEED - p.speed) * ENGINE_GAIN;
+    }
+    // Gravity along velocity vector: dive adds speed
     if (sin < 0) {
       dSpeed += -sin * DIVE_GAIN;
     }
-    // Steep-climb extra drag: shallow climb (<=30 deg) is free, beyond that costs
+    // Steep-climb extra drag: shallow climb (<=30 deg) is free, beyond that costs.
+    // This is the only thing that bleeds off dive-gained over-speed.
     if (sin > STEEP_CLIMB_SIN) {
       dSpeed -= (sin - STEEP_CLIMB_SIN) * STEEP_DRAG;
     }
