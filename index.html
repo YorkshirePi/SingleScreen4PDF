@@ -127,19 +127,27 @@ const KEY_CONFIGS = [
 const ANGLE_STEPS = 12;
 const STEP_RAD = Math.PI * 2 / ANGLE_STEPS;
 
-// 8 speeds + 0 stop/stall. Internally stored as a float, displayed floored.
-const MAX_SPEED = 8;
-const SPEED_PIX = 1.6; // pixels per speed unit per frame
+// 5 cruise speeds + 0 stop/stall. Internally stored as a float.
+const MAX_SPEED       = 5;
+const TERMINAL_SPEED  = 7.5; // maximum speed reachable in a dive (mass + gravity)
+const SPEED_PIX       = 1.0; // pixels per speed unit per frame (whole game pace)
 
-// Tunables for the requested physics:
-//   - climbing slowly does NOT slow the plane
-//   - climbing fast DOES slow the plane
-const ENGINE_THRUST   = 0.09;
-const GRAVITY_PITCH   = 0.10;  // gain when diving, loss when climbing
-const CLIMB_RATE_FREE = 1.5;   // vertical rate considered "slow climb"
-const CLIMB_DRAG      = 0.09;  // extra drag per unit of vertical-rate above free
-const STALL_SPEED     = 0.6;
-const FALL_RESET_SPD  = 6.5;   // falling fast => respawn
+// Mass-based physics.
+//   - engine seeks cruise (MAX_SPEED), gentle pull
+//   - dive component of gravity always adds speed (mass falls)
+//   - level / shallow climb stays at cruise (engine balances gravity ~ sin <= 0.5)
+//   - climbs steeper than ~30 degrees lose speed quickly
+const ENGINE_GAIN     = 0.025;  // engine seek strength
+const DIVE_GAIN       = 0.07;   // gravity-along-velocity when diving
+const STEEP_CLIMB_SIN = 0.5;    // 30 deg climb is still "shallow"
+const STEEP_DRAG      = 0.45;   // speed loss per unit sin above STEEP_CLIMB_SIN
+const STALL_SPEED     = 0.5;
+const STALL_RECOVER   = 2.2;    // speed needed to exit stall (with nose down)
+const STALL_FALL      = 0.55;   // pixels/frame of free-fall while stalled
+
+// Bullets
+const BULLET_BASE_SPD = 8;
+const BULLET_LIFE     = 95;
 
 // ==================== Input ====================
 const keys = Object.create(null);
@@ -263,9 +271,9 @@ function handleInput(p) {
       p.rotateCD = 7;
     }
   }
-  if (p.fireCD === 0 && keys[p.keys.fire] && !p.onGround && !p.stalled) {
+  if (p.fireCD === 0 && keys[p.keys.fire] && !p.onGround) {
     fire(p);
-    p.fireCD = 14;
+    p.fireCD = 16;
   }
 }
 
@@ -279,62 +287,62 @@ function physics(p) {
   const cos = Math.cos(a);
   const sin = Math.sin(a); // > 0 means nose pointed up (math y-up)
 
-  if (p.stalled) {
-    // Locked: nose down, gravity accelerates the fall. Falling fast => respawn.
-    p.angleStep = 9;
-    p.speed += 0.18;
-    p.x += 0;             // no horizontal drift while stalling straight down
-    p.y += p.speed * SPEED_PIX; // canvas y down
-    if (p.speed >= FALL_RESET_SPD || p.y >= GROUND_Y) {
-      kill(p, 'stall');
-    }
-    return;
-  }
-
   if (p.onGround) {
     p.angleStep = 0;
     p.y = GROUND_Y;
-    p.speed = Math.min(MAX_SPEED, p.speed + 0.10);
+    p.speed = Math.min(MAX_SPEED, p.speed + 0.06);
     p.x += p.speed * SPEED_PIX;
     if (p.x > W) p.x -= W;
     return;
   }
 
-  // ---- airborne ----
-  // engine thrust always pushes toward MAX_SPEED
-  let dSpeed = ENGINE_THRUST;
-  // pitch / gravity coupling
-  dSpeed += -sin * GRAVITY_PITCH;
-  // climb-rate drag: only when climbing FAST do we lose speed
-  const verticalRate = sin * p.speed; // >0 means climbing
-  if (verticalRate > CLIMB_RATE_FREE) {
-    dSpeed -= (verticalRate - CLIMB_RATE_FREE) * CLIMB_DRAG;
-  }
-  p.speed = Math.max(0, Math.min(MAX_SPEED, p.speed + dSpeed));
+  // ---- airborne / stalled share most logic ----
+  let dSpeed = 0;
 
-  // Stall: too slow while pointed upward
-  if (p.speed < STALL_SPEED && sin > 0.2) {
+  if (p.stalled) {
+    // No useful airflow: engine almost ineffective. Gravity along nose still works.
+    dSpeed += (MAX_SPEED - p.speed) * (ENGINE_GAIN * 0.25);
+    if (sin < 0) dSpeed += -sin * DIVE_GAIN;
+  } else {
+    // Engine seeks cruise speed (gentle, mass means slow change)
+    dSpeed += (MAX_SPEED - p.speed) * ENGINE_GAIN;
+    // Gravity along velocity vector: dive adds speed, climb subtracts
+    if (sin < 0) {
+      dSpeed += -sin * DIVE_GAIN;
+    }
+    // Steep-climb extra drag: shallow climb (<=30 deg) is free, beyond that costs
+    if (sin > STEEP_CLIMB_SIN) {
+      dSpeed -= (sin - STEEP_CLIMB_SIN) * STEEP_DRAG;
+    }
+  }
+
+  p.speed = Math.max(0, Math.min(TERMINAL_SPEED, p.speed + dSpeed));
+
+  // Stall trigger: too slow while pointed upward
+  if (!p.stalled && p.speed < STALL_SPEED && sin > 0.2) {
     p.stalled = true;
-    p.angleStep = 9;
-    p.speed = 0.4;
-    return;
+  }
+  // Stall recovery: enough airspeed regained while nose is at or below horizon
+  if (p.stalled && p.speed >= STALL_RECOVER && sin <= 0) {
+    p.stalled = false;
   }
 
-  // Move
+  // Movement
   p.x += cos * p.speed * SPEED_PIX;
   p.y -= sin * p.speed * SPEED_PIX;
+  // Stalled planes also fall straight down from gravity (no lift)
+  if (p.stalled) p.y += STALL_FALL;
 
   // Wrap horizontally
   if (p.x > W) p.x -= W;
   if (p.x < 0) p.x += W;
   // Ceiling
-  if (p.y < SKY_TOP) { p.y = SKY_TOP; if (sin > 0) p.speed *= 0.92; }
+  if (p.y < SKY_TOP) { p.y = SKY_TOP; if (sin > 0) p.speed *= 0.94; }
 
   // Ground interaction
   if (p.y >= GROUND_Y) {
-    // Hard impact = crash; gentle level landing = taxi.
-    const downRate = -sin * p.speed; // >0 if descending
-    if (downRate > 1.5 || Math.abs(sin) > 0.3) {
+    const downRate = -sin * p.speed; // >0 if descending nose-down
+    if (p.stalled || downRate > 1.2 || Math.abs(sin) > 0.3) {
       kill(p, 'crash');
     } else {
       p.y = GROUND_Y;
@@ -348,13 +356,14 @@ function physics(p) {
 function fire(p) {
   const a = angleRad(p);
   const cos = Math.cos(a), sin = Math.sin(a);
+  const speed = BULLET_BASE_SPD + p.speed * 0.4;
   bullets.push({
     x: p.x + cos * 24,
     y: p.y - sin * 24,
-    vx: cos * (10 + p.speed * 0.6),
-    vy: -sin * (10 + p.speed * 0.6),
+    vx: cos * speed,
+    vy: -sin * speed,
     owner: p.id,
-    life: 55,
+    life: BULLET_LIFE,
   });
 }
 
@@ -533,7 +542,9 @@ function drawHUD() {
     ctx.fillStyle = 'rgba(0,0,0,0.45)';
     ctx.fillRect(bx - 4, by - 2, 210, 22);
     ctx.fillStyle = p.color;
-    const spdLabel = p.stalled ? 'STALL' : (p.speed < 0.1 ? 'STOP' : Math.max(1, Math.min(MAX_SPEED, Math.floor(p.speed))));
+    const spdLabel = p.stalled ? 'STALL'
+      : (p.speed < 0.1 ? 'STOP'
+      : Math.max(1, Math.min(MAX_SPEED, Math.ceil(p.speed))));
     ctx.fillText(`${p.name}  KILLS:${p.score}  SPD:${spdLabel}`, bx, by);
   }
   ctx.textBaseline = 'alphabetic';
