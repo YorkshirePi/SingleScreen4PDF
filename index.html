@@ -129,8 +129,16 @@ const STEP_RAD = Math.PI * 2 / ANGLE_STEPS;
 
 // 5 cruise speeds + 0 stop/stall. Internally stored as a float.
 const MAX_SPEED       = 5;
-const TERMINAL_SPEED  = 7.5; // maximum speed reachable in a dive (mass + gravity)
-const SPEED_PIX       = 1.0; // pixels per speed unit per frame (whole game pace)
+const TERMINAL_SPEED  = 7.5;  // baseline max speed reachable in a dive
+const BOOST_TERMINAL  = 11.25; // ~50% above baseline; reachable only with full energy
+const SPEED_PIX       = 1.0;  // pixels per speed unit per frame (whole game pace)
+
+// Energy management: rewards repeated shallow-climb / steep-dive cycles.
+// Builds slowly while the plane is doing one of those things; decays slowly
+// otherwise. Raises the terminal-velocity cap up to BOOST_TERMINAL.
+const ENERGY_GAIN_CLIMB = 0.0016;  // shallow climb (0 < sin <= 0.5)
+const ENERGY_GAIN_DIVE  = 0.0016;  // steep dive   (sin <= -0.5)
+const ENERGY_DECAY      = 0.0008;  // otherwise
 
 // Mass-based physics. Mass = 3 (trebled): all speed-changing forces are
 // scaled down by 1/3 so the plane responds far more sluggishly to engine
@@ -204,6 +212,7 @@ function makePlayer(colorIdx, slot, total) {
     rotateCD: 0,
     fireCD: 0,
     score: 0,
+    energy: 0,
     spawnX: x,
   };
 }
@@ -324,7 +333,20 @@ function physics(p) {
     }
   }
 
-  p.speed = Math.max(0, Math.min(TERMINAL_SPEED, p.speed + dSpeed));
+  // Energy management: shallow climbs and steep dives both feed the reserve.
+  // Engine + airframe efficiency converts that into a higher terminal cap.
+  if (!p.onGround) {
+    if (sin > 0.1 && sin <= 0.55) {
+      p.energy = Math.min(1, p.energy + ENERGY_GAIN_CLIMB); // shallow climb
+    } else if (sin <= -0.55) {
+      p.energy = Math.min(1, p.energy + ENERGY_GAIN_DIVE);  // steep dive
+    } else {
+      p.energy = Math.max(0, p.energy - ENERGY_DECAY);      // bleeds off
+    }
+  }
+  const effTerminal = TERMINAL_SPEED + p.energy * (BOOST_TERMINAL - TERMINAL_SPEED);
+
+  p.speed = Math.max(0, Math.min(effTerminal, p.speed + dSpeed));
 
   // Stall trigger: too slow while pointed upward
   if (!p.stalled && p.speed < STALL_SPEED && sin > 0.2) {
@@ -406,6 +428,7 @@ function respawn(p) {
   p.alive = true;
   p.rotateCD = 0;
   p.fireCD = 0;
+  p.energy = 0;
 }
 
 // ==================== Render ====================
@@ -548,12 +571,20 @@ function drawHUD() {
     }
     // background tag
     ctx.fillStyle = 'rgba(0,0,0,0.45)';
-    ctx.fillRect(bx - 4, by - 2, 210, 22);
+    ctx.fillRect(bx - 4, by - 2, 240, 22);
     ctx.fillStyle = p.color;
     const spdLabel = p.stalled ? 'STALL'
       : (p.speed < 0.1 ? 'STOP'
-      : Math.max(1, Math.min(MAX_SPEED, Math.ceil(p.speed))));
+      : (p.speed > MAX_SPEED + 0.05 ? `${MAX_SPEED}+` : Math.max(1, Math.ceil(p.speed))));
     ctx.fillText(`${p.name}  KILLS:${p.score}  SPD:${spdLabel}`, bx, by);
+    // energy bar
+    const barX = bx + 168, barY = by + 4, barW = 60, barH = 10;
+    ctx.fillStyle = 'rgba(255,255,255,0.25)';
+    ctx.fillRect(barX, barY, barW, barH);
+    ctx.fillStyle = p.color;
+    ctx.fillRect(barX, barY, barW * p.energy, barH);
+    ctx.strokeStyle = 'rgba(0,0,0,0.6)';
+    ctx.strokeRect(barX + 0.5, barY + 0.5, barW, barH);
   }
   ctx.textBaseline = 'alphabetic';
 }
