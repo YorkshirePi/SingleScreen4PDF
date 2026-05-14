@@ -15,13 +15,11 @@
   #wrap {
     position: relative;
     width: 100vw; height: 100vh;
-    display: flex; justify-content: center; align-items: center;
   }
   canvas {
     background: #87CEEB;
-    image-rendering: pixelated;
-    max-width: 100%; max-height: 100%;
-    box-shadow: 0 0 30px rgba(0,0,0,0.6);
+    display: block;
+    width: 100vw; height: 100vh;
   }
   #menu {
     position: absolute; inset: 0;
@@ -78,12 +76,35 @@
     transition: opacity 0.3s;
   }
   #banner.show { opacity: 1; }
+  #result {
+    position: absolute; inset: 0;
+    background: rgba(10,10,20,0.92);
+    display: flex; flex-direction: column;
+    justify-content: center; align-items: center;
+    text-align: center;
+    z-index: 11;
+  }
+  #result.hidden { display: none; }
+  #result h1 { font-size: 2.5em; }
+  #rankings { margin: 20px 0 10px; font-size: 1.25em; }
+  #rankings .rrow { display: flex; gap: 30px; justify-content: space-between;
+    min-width: 360px; padding: 4px 12px; }
+  #rankings .rrow.winner { background: rgba(241,196,15,0.15);
+    border-left: 4px solid #f1c40f; }
 </style>
 </head>
 <body>
 <div id="wrap">
-  <canvas id="game" width="1280" height="720"></canvas>
+  <canvas id="game"></canvas>
   <div id="banner"></div>
+  <div id="result" class="hidden">
+    <h1 id="winnerHead">P1 WINS!</h1>
+    <div class="sub">First to 10 kills</div>
+    <div id="rankings"></div>
+    <div>
+      <button onclick="resultToMenu()">PLAY AGAIN</button>
+    </div>
+  </div>
   <div id="menu">
     <h1>WW1 DOGFIGHT</h1>
     <div class="sub">Single Screen Air Combat</div>
@@ -106,10 +127,20 @@
 // ==================== Setup ====================
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
-const W = canvas.width;
-const H = canvas.height;
-const GROUND_Y = H - 70;
+let W = window.innerWidth;
+let H = window.innerHeight;
+let GROUND_Y = H - 70;
 const SKY_TOP = 30;
+
+function syncCanvasSize() {
+  W = window.innerWidth;
+  H = window.innerHeight;
+  canvas.width = W;
+  canvas.height = H;
+  GROUND_Y = H - 70;
+}
+syncCanvasSize();
+window.addEventListener('resize', syncCanvasSize);
 
 const COLORS = ['#e74c3c', '#3498db', '#f1c40f', '#2ecc71'];
 const NAMES  = ['P1', 'P2', 'P3', 'P4'];
@@ -160,6 +191,102 @@ const STALL_FALL      = 0.55;          // pixels/frame of free-fall while stalle
 // Bullets
 const BULLET_BASE_SPD = 8;
 const BULLET_LIFE     = 95;
+const MAX_BULLETS_PER_PLAYER = 3;
+
+// Scoring
+const WIN_SCORE = 10;
+
+// ==================== Audio ====================
+let audioCtx = null;
+let masterGain = null;
+
+function ensureAudio() {
+  if (audioCtx) {
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+    return;
+  }
+  try {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    masterGain = audioCtx.createGain();
+    masterGain.gain.value = 0.55;
+    masterGain.connect(audioCtx.destination);
+  } catch (e) {
+    audioCtx = null;
+  }
+}
+
+function startEngineSound(p) {
+  if (!audioCtx) return;
+  const osc = audioCtx.createOscillator();
+  osc.type = 'sawtooth';
+  osc.frequency.value = 80;
+  const filter = audioCtx.createBiquadFilter();
+  filter.type = 'lowpass';
+  filter.frequency.value = 700;
+  const gain = audioCtx.createGain();
+  gain.gain.value = 0;
+  osc.connect(filter).connect(gain).connect(masterGain);
+  osc.start();
+  p.audio = { osc, gain, filter };
+}
+
+function stopEngineSound(p) {
+  if (!p.audio) return;
+  try {
+    p.audio.gain.gain.value = 0;
+    p.audio.osc.stop();
+  } catch (e) {}
+  p.audio = null;
+}
+
+function updateEngineSound(p) {
+  if (!p.audio || !audioCtx) return;
+  const t = audioCtx.currentTime;
+  const target = p.alive ? 0.045 : 0;
+  p.audio.gain.gain.setTargetAtTime(target, t, 0.06);
+  // map speed to frequency: idle ~70 Hz, full energy boost ~260 Hz
+  const ratio = Math.min(1, p.speed / BOOST_TERMINAL);
+  const freq = 70 + ratio * 190;
+  p.audio.osc.frequency.setTargetAtTime(freq, t, 0.05);
+}
+
+function playFireSound() {
+  if (!audioCtx) return;
+  const t = audioCtx.currentTime;
+  const osc = audioCtx.createOscillator();
+  osc.type = 'square';
+  osc.frequency.setValueAtTime(900, t);
+  osc.frequency.exponentialRampToValueAtTime(180, t + 0.07);
+  const g = audioCtx.createGain();
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(0.18, t + 0.005);
+  g.gain.exponentialRampToValueAtTime(0.001, t + 0.1);
+  osc.connect(g).connect(masterGain);
+  osc.start(t);
+  osc.stop(t + 0.12);
+}
+
+function playBoomSound() {
+  if (!audioCtx) return;
+  const t = audioCtx.currentTime;
+  const dur = 0.7;
+  const buf = audioCtx.createBuffer(1, Math.floor(audioCtx.sampleRate * dur), audioCtx.sampleRate);
+  const data = buf.getChannelData(0);
+  for (let i = 0; i < data.length; i++) {
+    data[i] = (Math.random() * 2 - 1) * (1 - i / data.length);
+  }
+  const src = audioCtx.createBufferSource();
+  src.buffer = buf;
+  const f = audioCtx.createBiquadFilter();
+  f.type = 'lowpass';
+  f.frequency.setValueAtTime(1200, t);
+  f.frequency.exponentialRampToValueAtTime(80, t + 0.55);
+  const g = audioCtx.createGain();
+  g.gain.setValueAtTime(0.55, t);
+  g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+  src.connect(f).connect(g).connect(masterGain);
+  src.start(t);
+}
 
 // ==================== Input ====================
 const keys = Object.create(null);
@@ -180,21 +307,52 @@ let running = false;
 let bannerTimer = 0;
 
 function startGame(n) {
+  ensureAudio();
   document.getElementById('menu').classList.add('hidden');
+  document.getElementById('result').classList.add('hidden');
   // 2-player uses P1 + P4 (opposite sides of keyboard)
   const indices = (n === 2) ? [0, 3] : [0, 1, 2, 3];
   players = indices.map((idx, slot) => makePlayer(idx, slot, indices.length));
   bullets = [];
   particles = [];
   fireballs = [];
+  for (const p of players) startEngineSound(p);
   running = true;
   showBanner('FIGHT!');
   requestAnimationFrame(loop);
 }
 
+function stopAllEngines() {
+  for (const p of players) stopEngineSound(p);
+}
+
 function returnToMenu() {
   running = false;
+  stopAllEngines();
+  document.getElementById('result').classList.add('hidden');
   document.getElementById('menu').classList.remove('hidden');
+}
+
+function resultToMenu() { returnToMenu(); }
+window.resultToMenu = resultToMenu;
+
+function endGame(winner) {
+  running = false;
+  stopAllEngines();
+  const sorted = [...players].sort((a, b) => b.score - a.score);
+  const rk = document.getElementById('rankings');
+  rk.innerHTML = '';
+  sorted.forEach((p, i) => {
+    const row = document.createElement('div');
+    row.className = 'rrow' + (p === winner ? ' winner' : '');
+    row.style.color = p.color;
+    row.innerHTML = `<span>${i + 1}. ${p.name}</span><span>${p.score} KILLS</span>`;
+    rk.appendChild(row);
+  });
+  const head = document.getElementById('winnerHead');
+  head.textContent = `${winner.name} WINS!`;
+  head.style.color = winner.color;
+  document.getElementById('result').classList.remove('hidden');
 }
 
 function makePlayer(colorIdx, slot, total) {
@@ -235,10 +393,11 @@ function update() {
     if (!p.alive) {
       p.deathTimer--;
       if (p.deathTimer <= 0) respawn(p);
-      continue;
+    } else {
+      handleInput(p);
+      physics(p);
     }
-    handleInput(p);
-    physics(p);
+    updateEngineSound(p);
   }
 
   for (const b of bullets) {
@@ -255,7 +414,10 @@ function update() {
       if (dx*dx + dy*dy < 22*22) {
         kill(p, 'shot');
         const shooter = players.find(q => q.id === b.owner);
-        if (shooter) shooter.score++;
+        if (shooter) {
+          shooter.score++;
+          if (shooter.score >= WIN_SCORE) endGame(shooter);
+        }
         b.life = 0;
         break;
       }
@@ -263,18 +425,20 @@ function update() {
   }
   bullets = bullets.filter(b => b.life > 0 && b.x > -10 && b.x < W+10 && b.y > -10 && b.y < H+10);
 
-  // Plane-plane mid-air collisions: both detonate, leaving a slightly larger
-  // fireball at the impact point that can engulf nearby planes.
+  // Plane-plane collisions: any two living planes touching detonate each
+  // other, leaving a slightly larger fireball at the impact point that can
+  // engulf nearby planes.
+  const HIT = 30;
   for (let i = 0; i < players.length; i++) {
     for (let j = i + 1; j < players.length; j++) {
       const a = players[i], b = players[j];
-      if (!a.alive || !b.alive || a.onGround || b.onGround) continue;
+      if (!a.alive || !b.alive) continue;
       const dx = a.x - b.x, dy = a.y - b.y;
-      if (dx*dx + dy*dy < 26*26) {
+      if (dx*dx + dy*dy < HIT*HIT) {
         const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
         kill(a, 'midair');
         kill(b, 'midair');
-        spawnFireball(mx, my, 70, true);
+        spawnFireball(mx, my, 75, true);
       }
     }
   }
@@ -319,8 +483,8 @@ function handleInput(p) {
     }
   }
   if (p.fireCD === 0 && keys[p.keys.fire] && !p.onGround) {
-    fire(p);
-    p.fireCD = 16;
+    if (fire(p)) p.fireCD = 16;
+    else p.fireCD = 4; // prevent spamming the limit check
   }
 }
 
@@ -417,7 +581,14 @@ function physics(p) {
 }
 
 // ==================== Combat ====================
+function countBulletsFrom(ownerId) {
+  let n = 0;
+  for (const b of bullets) if (b.owner === ownerId) n++;
+  return n;
+}
+
 function fire(p) {
+  if (countBulletsFrom(p.id) >= MAX_BULLETS_PER_PLAYER) return false;
   const a = angleRad(p);
   const cos = Math.cos(a), sin = Math.sin(a);
   const speed = BULLET_BASE_SPD + p.speed * 0.4;
@@ -429,12 +600,15 @@ function fire(p) {
     owner: p.id,
     life: BULLET_LIFE,
   });
+  playFireSound();
+  return true;
 }
 
 function kill(p, cause) {
   if (!p.alive) return;
   p.alive = false;
   p.deathTimer = 70;
+  playBoomSound();
   // explosion particles
   for (let i = 0; i < 22; i++) {
     const ang = Math.random() * Math.PI * 2;
