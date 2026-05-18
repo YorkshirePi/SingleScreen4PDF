@@ -288,6 +288,56 @@ function playBoomSound() {
   src.start(t);
 }
 
+// Play a sequence of [freqHz, startSec, durSec] notes as a brassy fanfare.
+function playFanfare(notes) {
+  if (!audioCtx) return;
+  const t0 = audioCtx.currentTime + 0.05;
+  for (const [freq, start, dur] of notes) {
+    const t = t0 + start;
+    const osc = audioCtx.createOscillator();
+    osc.type = 'sawtooth';
+    osc.frequency.value = freq;
+    const filter = audioCtx.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.value = 2200;
+    const g = audioCtx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.22, t + 0.03);
+    g.gain.setValueAtTime(0.22, t + dur * 0.7);
+    g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+    osc.connect(filter).connect(g).connect(masterGain);
+    osc.start(t);
+    osc.stop(t + dur + 0.05);
+  }
+}
+
+// Bright rising bugle call for the start of a match.
+function playStartFanfare() {
+  const G4 = 392, C5 = 523.25, E5 = 659.25, G5 = 783.99;
+  playFanfare([
+    [G4, 0.00, 0.18],
+    [C5, 0.18, 0.18],
+    [E5, 0.36, 0.18],
+    [G5, 0.54, 0.45],
+  ]);
+}
+
+// Triumphant longer fanfare for the winner.
+function playWinFanfare() {
+  const C5 = 523.25, E5 = 659.25, G5 = 783.99, C6 = 1046.5;
+  playFanfare([
+    [C5, 0.00, 0.16],
+    [C5, 0.16, 0.16],
+    [C5, 0.32, 0.16],
+    [C5, 0.48, 0.30],
+    [E5, 0.78, 0.30],
+    [G5, 1.08, 0.30],
+    [C6, 1.38, 0.70],
+    [G5, 1.38, 0.70],
+    [E5, 1.38, 0.70],
+  ]);
+}
+
 // ==================== Input ====================
 const keys = Object.create(null);
 addEventListener('keydown', e => {
@@ -317,6 +367,7 @@ function startGame(n) {
   particles = [];
   fireballs = [];
   for (const p of players) startEngineSound(p);
+  playStartFanfare();
   running = true;
   showBanner('FIGHT!');
   requestAnimationFrame(loop);
@@ -339,6 +390,7 @@ window.resultToMenu = resultToMenu;
 function endGame(winner) {
   running = false;
   stopAllEngines();
+  playWinFanfare();
   const sorted = [...players].sort((a, b) => b.score - a.score);
   const rk = document.getElementById('rankings');
   rk.innerHTML = '';
